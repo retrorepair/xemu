@@ -35,7 +35,7 @@ if not fs.exists(lib)
   # The dash matters: the bundled form without one is only recognised as the
   # operation when it is the very first argument, so anything placed ahead of
   # it leaves tar reporting that no operation was given.
-  tar_args = ['-xzf', src_archive, '-C', meson.current_build_dir()]
+  tar_args = ['-xzf', src_archive, '-C', meson.current_build_dir().replace('\\', '/')]
   if host_os == 'windows'
     tar_args = ['--force-local'] + tar_args
   endif
