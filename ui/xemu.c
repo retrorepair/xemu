@@ -62,6 +62,10 @@
 #include <math.h>
 #include <SDL3/SDL.h>
 
+#ifdef _WIN32
+#include "xui/win32-dxgi-present.h"
+#endif
+
 #ifndef DEBUG_XEMU_C
 #define DEBUG_XEMU_C 0
 #endif
@@ -546,8 +550,30 @@ static void handle_windowevent(SDL_Event *ev)
                 g_config.display.window.last_width = ev->window.data1;
                 g_config.display.window.last_height = ev->window.data2;
             }
+
+#ifdef _WIN32
+            if (win32_dxgi_present_is_active()) {
+                int width;
+                int height;
+                if (!SDL_GetWindowSizeInPixels(scon->real_window, &width,
+                                               &height)) {
+                    fprintf(stderr, "SDL_GetWindowSizeInPixels failed "
+                                    "responding to resize event.\n");
+                } else {
+                    win32_dxgi_present_resize(width, height);
+                }
+            }
+#endif
         }
         break;
+#ifdef _WIN32
+    case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
+        if (win32_dxgi_present_is_active()) {
+            win32_dxgi_present_resize(ev->window.data1, ev->window.data2);
+        }
+        break;
+#endif
+
     case SDL_EVENT_WINDOW_FOCUS_GAINED:
     case SDL_EVENT_WINDOW_MOUSE_ENTER:
         if (!gui_grab && (qemu_input_is_absolute(scon->dcl.con) || absolute_enabled)) {
@@ -900,6 +926,12 @@ static void gl_render_frame(struct xemu_console *scon)
         xemu_main_loop_unlock();
     }
 
+#ifdef _WIN32
+    if (win32_dxgi_present_is_active()) {
+        win32_dxgi_present_begin_frame();
+    }
+#endif
+
     glClearColor(0, 0, 0, 0);
     glClear(GL_COLOR_BUFFER_BIT);
     xemu_snapshots_set_framebuffer_texture(tex, flip_required);
@@ -935,7 +967,23 @@ static void gl_render_frame(struct xemu_console *scon)
     }
 
     nv2a_release_framebuffer_surface();
+
+#ifdef _WIN32
+    if (win32_dxgi_present_is_active()) {
+        win32_dxgi_present_end_frame(xemu_vsync_effective());
+    } else {
+        static bool warned = false;
+        if (!warned) {
+            fprintf(stderr,
+                    "win32_dxgi present failed or unavailable, falling back to "
+                    "SDL_GL_SwapWindow\n");
+            warned = true;
+        }
+        SDL_GL_SwapWindow(scon->real_window);
+    }
+#else
     SDL_GL_SwapWindow(scon->real_window);
+#endif
     groovy_diag_stage(GROOVY_DIAG_PRESENT, present_start);
     assert(glGetError() == GL_NO_ERROR);
 
@@ -970,6 +1018,21 @@ static bool event_watch_callback(void *userdata, SDL_Event *event)
 {
     struct xemu_console *scon = (struct xemu_console *)userdata;
 
+    if (event->type == SDL_EVENT_WINDOW_RESIZED) {
+#ifdef _WIN32
+        if (win32_dxgi_present_is_active()) {
+            int width;
+            int height;
+            if (!SDL_GetWindowSizeInPixels(scon->real_window, &width,
+                                           &height)) {
+                fprintf(stderr, "SDL_GetWindowSizeInPixels failed "
+                                "responding to resize event.\n");
+            } else {
+                win32_dxgi_present_resize(width, height);
+            }
+        }
+#endif
+    }
     if (event->type == SDL_EVENT_WINDOW_EXPOSED ||
         event->type == SDL_EVENT_WINDOW_RESIZED) {
         if (groovy_is_streaming()) {
@@ -1200,6 +1263,9 @@ static void display_early_init(DisplayOptions *o)
 
     SDL_GL_MakeCurrent(m_window, m_context);
     SDL_GL_SetSwapInterval(xemu_vsync_effective() ? 1 : 0);
+#ifdef _WIN32
+    win32_dxgi_present_init(m_window);
+#endif
     xemu_hud_init(m_window, m_context);
 }
 
@@ -1284,6 +1350,9 @@ static void display_finalize(void)
     }
 
     SDL_RemoveEventWatch(event_watch_callback, &scon_list[0]);
+#ifdef _WIN32
+    win32_dxgi_present_cleanup();
+#endif
     SDL_GL_MakeCurrent(NULL, NULL);
     SDL_GL_DestroyContext(m_context);
     SDL_DestroyWindow(m_window);
